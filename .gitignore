@@ -1,0 +1,9 @@
+target/
+.idea/
+*.iml
+.env
+*.log
+
+# Personal and internal material is not part of the delivery.
+/GUIA_PERSONAL.txt
+/odd/

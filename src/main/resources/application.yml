@@ -1,0 +1,13 @@
+financial:
+  lock-timeout-ms: ${FINANCIAL_LOCK_TIMEOUT_MS:1000}
+
+spring:
+  application:
+    name: financial-consistency
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/financial}
+    username: ${DB_USERNAME:financial}
+    password: ${DB_PASSWORD:local-development-only}
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 30000
