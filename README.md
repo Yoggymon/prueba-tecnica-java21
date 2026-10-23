@@ -85,4 +85,4 @@ Para Docker Desktop en Linux, está disponible la [configuración específica](d
 
 Detener la aplicación con Ctrl+C y ejecutar `docker compose stop`. Los datos se conservan.
 
-**La API y sus credenciales son solo para uso local. No exponerla públicamente.**
+
