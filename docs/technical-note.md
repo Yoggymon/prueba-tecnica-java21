@@ -1,75 +1,63 @@
-# Nota técnica: consistencia financiera local
+# Nota técnica
 
-La solución usa bloqueo pesimista en PostgreSQL: una decisión simple para cuentas disputadas
-en una sola base. Véanse los [flujos](transaction-flows.md) y [resultados](test-results.md).
-Extensión prevista: 1–2 páginas; paginación PDF no verificada.
+La solución protege los saldos con bloqueos de filas en PostgreSQL. Cada retiro bloquea su
+cuenta; cada transferencia bloquea ambas. Así, dos operaciones sobre una misma cuenta no
+pueden modificar su saldo al mismo tiempo.
 
-## Concurrencia y alternativas
+## Concurrencia
 
-Con saldo 100, dos transacciones pueden leer 100, restar 10 y escribir ambas 90: se pierde
-un débito. `@Transactional` aporta atomicidad, pero no serializa por sí sola esa secuencia
-con el aislamiento predeterminado. `SELECT ... FOR UPDATE` obliga a esperar; la siguiente
-operación valida el saldo actualizado bajo bloqueo.
+Sin ese control, dos operaciones podrían leer un saldo de 100, restar 10 y guardar ambas 90.
+Se perdería un débito. `@Transactional` permite confirmar o deshacer los cambios juntos, pero
+no evita por sí sola esa lectura simultánea. `SELECT ... FOR UPDATE` hace esperar a la segunda
+operación, que luego valida el saldo actualizado.
 
-Se bloquea primero la operación y después las cuentas por ID ascendente, independientemente
-del sentido de transferencia. Este orden evita ciclos entre cuentas dentro del protocolo,
-no cualquier deadlock ni los causados por escritores externos. El coste es serializar
-una cuenta muy disputada y mantener conexiones ocupadas durante las esperas.
-
-Alternativas: `@Version` detecta escrituras obsoletas, pero exige más reintentos bajo contención;
-un `UPDATE ... WHERE balance >= amount` resuelve el débito, aunque crédito, auditoría e
-idempotencia aún necesitan una transacción. Serializable también detecta conflictos y exige
-reintentos. No hace falta combinar estas estrategias para cumplir el ejercicio.
+Primero se bloquea la operación y después las cuentas por ID ascendente, sin importar el
+sentido de la transferencia. El orden evita ciclos entre cuentas que siguen este protocolo;
+no elimina todos los posibles bloqueos mutuos o *deadlocks*. Una cuenta con muchas solicitudes
+simultáneas obliga a esperar y ocupa conexiones mientras tanto.
 
 ## Transacciones e idempotencia
 
-El registro `REQUIRES_NEW` guarda PROCESSING con clave global única o compara el contenido
-normalizado existente: tipo, origen, destino e importe. 5 y 5.00 coinciden; claves con
-mayúsculas o espacios distintos no se normalizan. Un contenido distinto devuelve 409 sin
-cambiar datos ni contadores.
+El registro inicial usa una transacción separada (`REQUIRES_NEW`). Guarda PROCESSING con una
+clave única global, compartida por retiros y transferencias. Una repetición compara tipo,
+origen, destino e importe: 5 y 5.00 representan lo mismo. La clave distingue mayúsculas y
+espacios. Si los datos difieren, devuelve HTTP 409 sin alterar registros ni contadores.
 
-El procesamiento llama a otro componente `@Transactional`: bloquea operación y cuentas,
-valida y confirma saldos, SUCCESS e intento juntos. Un rechazo confirma REJECTED e intento,
-sin mover dinero. Un fallo entre débito y crédito revierte todas las escrituras del procesamiento.
-Solo SUCCESS representa un movimiento financiero; `operation_attempts` registra intentos.
+Cada intento de procesamiento usa una nueva transacción. En una transferencia, débito,
+crédito, resultado SUCCESS e intento se confirman juntos. Un rechazo guarda REJECTED y su
+intento sin mover dinero. Un fallo entre débito y crédito revierte todo el procesamiento;
+después, otra transacción registra el fallo sin sobrescribir resultados definitivos.
 
-El dinero usa `BigDecimal` y `NUMERIC(19,2)`, nunca float/double. Se exigen centavos positivos
-exactos, sin redondear. SQL impide saldos negativos; superar el límite del destino es un
-rechazo previo al débito. Por cuenta se verifica desde una instantánea SQL consistente:
+El dinero usa `BigDecimal` y `NUMERIC(19,2)`: importes positivos con céntimos exactos, sin
+redondeo. La base impide saldos negativos; el límite del saldo destino se valida antes de
+debitar. La [conciliación SQL](transaction-flows.md#conciliar-desde-sql) comprueba que cada saldo
+sea el inicial menos salidas SUCCESS más entradas SUCCESS. Los intentos no son movimientos.
 
-```text
-balance = initial_balance − SUM(importes de origen SUCCESS)
-                          + SUM(importes de destino SUCCESS TRANSFER)
-```
+## Fallos y reintentos
 
-Los rechazos y fallos no entran en esa suma. Las transferencias conservan el total; los retiros
-exitosos lo reducen. La [consulta de conciliación](transaction-flows.md#conciliar-desde-sql)
-permite comprobarlo sin depender de respuestas HTTP. No hay claves foráneas hacia cuentas
-en las operaciones: así se conserva ACCOUNT_NOT_FOUND como rechazo auditable.
+Solo los errores 40P01 (deadlock), 40001 (conflicto de serialización) y 55P03 (espera de bloqueo
+agotada), tras una reversión confirmada, permiten reintentos automáticos. Hay como máximo
+tres intentos totales por llamada, con esperas de 20 y 40 ms fuera de las transacciones.
+Al agotarlos queda FAILED reintentable; otros fallos de procesamiento quedan FAILED definitivo.
+SUCCESS y REJECTED devuelven siempre el resultado guardado.
 
-## Fallos y recuperación
+Si se pierde la conexión o la confirmación, el movimiento podría haberse aplicado. Otra
+transacción bloquea y consulta la operación, comprueba sus datos y devuelve el resultado
+definitivo o HTTP 503 con OUTCOME_UNKNOWN. No reintenta a ciegas: el cliente debe conservar
+la misma clave. Una caída o una base no disponible puede impedir la auditoría del fallo y
+dejar PROCESSING. No hay recuperación automática en segundo plano.
 
-Tras una reversión confirmada, otra transacción registra el fallo sin sobrescribir resultados
-terminales concurrentes. Solo SQLSTATE 40P01, 40001 y 55P03 permiten reintentos automáticos:
-tres intentos totales por llamada, en transacciones nuevas, con esperas de 20/40 ms fuera de
-transacciones. El agotamiento deja FAILED reintentable con la misma clave; un fallo genérico
-deja FAILED terminal. SUCCESS y REJECTED siempre se repiten.
+## Alternativas y límites
 
-Un fallo de conexión o confirmación puede ocultar un commit exitoso. Se bloquea y consulta
-el estado persistido en otra transacción, verificando el contenido. Se devuelve el resultado
-terminal o 503 OUTCOME_UNKNOWN, nunca un FAILED inventado ni un reintento a ciegas.
-El cliente conserva la clave. Una caída puede perder la auditoría separada de fallos y dejar
-PROCESSING; no existe recuperación en segundo plano ni auditoría resistente a caídas.
+El control optimista con `@Version` detecta cambios simultáneos, pero aumenta los reintentos
+cuando muchas solicitudes compiten. Una actualización condicional simplifica el débito,
+aunque crédito y registro aún necesitan una transacción. El aislamiento serializable también
+puede exigir reintentos.
 
-## Límites y mejoras operativas
+Una transacción local no cubre cuentas en bases distintas. La confirmación en dos fases
+(2PC) añade coordinación y costes de disponibilidad; una saga compensa pasos ya confirmados
+y admite estados intermedios. Ninguna está implementada.
 
-Una transacción local no cubre bases distintas. Dos fases coordinaría un commit distribuido
-con costes de disponibilidad y operación; una saga usa compensaciones y expone estados
-intermedios, sin la misma atomicidad. Ninguna está implementada.
-
-Como mejora opcional: medir esperas, deadlocks, reintentos agotados, resultados inciertos,
-fallos de auditoría y discrepancias de conciliación; alertar sobre los últimos tres.
-Usar correlación depurada, nunca claves originales ni datos sensibles. Otra mejora sería
-ensayar cortes reales de conexión: hoy solo el bloqueo 55P03 es real; la pérdida del acuse
-se inyecta en pruebas. No hay benchmark, certificación bancaria ni endurecimiento productivo;
-Java 21.0.2 y las dependencias fijadas requieren revisar parches antes de un despliegue real.
+Como mejoras, se proponen métricas de esperas, deadlocks y reintentos; logs de fallos sin datos
+sensibles; y alertas por resultados inciertos, fallos de auditoría o diferencias de conciliación.
+Estas medidas no están implementadas. Los [resultados](test-results.md) detallan el alcance de las pruebas.

@@ -4,7 +4,6 @@ import java.math.BigDecimal;
 import java.util.Map;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -23,7 +22,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
-@DisplayName("Retiros")
 class WithdrawalTest {
     @Container
     @ServiceConnection
@@ -40,7 +38,6 @@ class WithdrawalTest {
     }
 
     @Test
-    @DisplayName("Registra el retiro y evita duplicarlo al repetir la solicitud")
     void withdrawsAndPersistsTheCompleteMovement() {
         var response = withdraw("withdraw-1", "5.00");
         assertThat(response.getStatusCode().value()).isEqualTo(200);
@@ -65,7 +62,6 @@ class WithdrawalTest {
     }
 
     @Test
-    @DisplayName("Rechaza el retiro sin saldo suficiente y conserva el saldo")
     void rejectsInsufficientFundsWithoutFinancialEffects() {
         var response = withdraw("insufficient", "10001.00");
         assertThat(response.getStatusCode().value()).isEqualTo(422);
@@ -81,7 +77,6 @@ class WithdrawalTest {
     }
 
     @Test
-    @DisplayName("Registra el rechazo por cuenta inexistente y devuelve el mismo resultado al repetir")
     void missingAccountIsAuditedAndReplayed() {
         var request = Map.of("key", "missing", "sourceId", 999, "amount", 5);
         var first = http.postForEntity("/withdrawals", request, JsonNode.class);
@@ -97,8 +92,7 @@ class WithdrawalTest {
         assertThat(jdbc.queryForObject("select result from operation_attempts", String.class)).isEqualTo("REJECTED");
     }
 
-    @ParameterizedTest(name = "Cuenta {0}, importe {1}")
-    @DisplayName("La misma clave exige los mismos datos y acepta céntimos equivalentes")
+    @ParameterizedTest
     @CsvSource({"2, 5.00", "1, 6.00"})
     void payloadMismatchConflictsButEquivalentCentsReplay(long source, BigDecimal amount) {
         var first = withdraw("payload", "5.00");
@@ -114,8 +108,7 @@ class WithdrawalTest {
         assertCounts(1, 1);
     }
 
-    @ParameterizedTest(name = "Solicitud no válida: {0}")
-    @DisplayName("Las solicitudes no válidas no dejan registros")
+    @ParameterizedTest
     @ValueSource(strings = {"{}", "null", "{", "{\"key\":\" \",\"sourceId\":1,\"amount\":5}",
             "{\"key\":\"x\",\"sourceId\":0,\"amount\":5}",
             "{\"key\":\"x\",\"sourceId\":1.5,\"amount\":5}",
@@ -130,7 +123,6 @@ class WithdrawalTest {
     }
 
     @Test
-    @DisplayName("Acepta claves de hasta 128 caracteres y rechaza las más largas")
     void enforcesKeyLengthAndAcceptsItsBoundary() {
         assertInvalid(withdraw("k".repeat(129), "5"));
         assertThat(withdraw("k".repeat(128), "5").getStatusCode().value()).isEqualTo(200);
@@ -139,7 +131,6 @@ class WithdrawalTest {
     }
 
     @Test
-    @DisplayName("Un destino adicional no convierte el retiro en transferencia")
     void extraDestinationFieldStillDoesNotTurnAWithdrawalIntoATransfer() {
         var response = http.postForEntity("/withdrawals", Map.of("key", "extra-destination",
                 "sourceId", 1, "destinationId", 2, "amount", 5), JsonNode.class);

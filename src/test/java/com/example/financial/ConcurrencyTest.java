@@ -19,7 +19,6 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.function.IntFunction;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -44,7 +43,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 @Testcontainers
 @Timeout(value = 300, unit = TimeUnit.SECONDS)
-@DisplayName("Operaciones simultáneas y comprobación de saldos")
 class ConcurrencyTest {
     private static final int ACTIVE_OPERATIONS = 64;
     private static final Duration WORKLOAD_TIMEOUT = Duration.ofSeconds(240);
@@ -65,8 +63,7 @@ class ConcurrencyTest {
         jdbc.update("insert into accounts(id, initial_balance, balance) values (1, 10000, 10000), (2, 0, 0)");
     }
 
-    @ParameterizedTest(name = "Caso {index} ({0}): {1} solicitudes de {2}, saldo inicial {3}")
-    @DisplayName("Comprueba los saldos de cada cuenta con los movimientos registrados")
+    @ParameterizedTest(name = "{0}: {1} requests of {2}, initial balance {3}")
     @CsvSource({
             "WITHDRAWAL, 1000, 5.00, 10000.00, 1000, 0, 5000.00, 0.00",
             "TRANSFER,    500, 10.00, 10000.00, 500, 0, 5000.00, 5000.00",
@@ -88,7 +85,6 @@ class ConcurrencyTest {
     }
 
     @Test
-    @DisplayName("La misma clave genera un solo resultado y repetirla no cambia los datos")
     void concurrentSameKeyHasOneStableResultAndReplayDoesNotChangeDatabase() throws Exception {
         var request = new WithdrawalRequest("shared-key", 1, new BigDecimal("5.00"));
         var results = runTogether(128, ignored -> orchestrator.execute(request));
@@ -103,7 +99,6 @@ class ConcurrencyTest {
     }
 
     @Test
-    @DisplayName("Las transferencias en ambos sentidos conservan ambos saldos")
     void bidirectionalTransfersWithSufficientFundsConserveBothBalances() throws Exception {
         setInitialBalance(2, "10000.00");
         var results = runTogether(512, i -> orchestrator.execute(new TransferRequest("both-" + i,
@@ -143,14 +138,14 @@ class ConcurrencyTest {
                     }
                 }));
             }
-            // Todas las tareas deben estar listas antes de iniciar las operaciones.
+            // Every requested task exists and is ready before any operation is allowed to start.
             assertThat(ready.await(remaining(deadline), TimeUnit.NANOSECONDS)).isTrue();
             start.countDown();
             var results = new ArrayList<Operation.Result>(tasks);
             for (int i = 0; i < tasks; i++) {
                 var future = completed.poll(remaining(deadline), TimeUnit.NANOSECONDS);
-                assertThat(future).as("tarea completada dentro del plazo total de la prueba").isNotNull();
-                results.add(future.get()); // La tarea ya terminó; cualquier excepción se propaga.
+                assertThat(future).as("task completion within one global workload deadline").isNotNull();
+                results.add(future.get()); // already completed; propagates every task exception
             }
             assertThat(results).hasSize(tasks);
             return results;
@@ -158,14 +153,14 @@ class ConcurrencyTest {
             start.countDown();
             futures.forEach(future -> future.cancel(true));
             executor.shutdownNow();
-            // Evitar ExecutorService.close(): su espera sin límite podría impedir que termine una prueba fallida.
-            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).as("finalización de las tareas").isTrue();
+            // Do not use ExecutorService.close(): its unbounded wait could hang a failing test.
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).as("worker cleanup").isTrue();
         }
     }
 
     private long remaining(long deadline) {
         long nanos = deadline - System.nanoTime();
-        assertThat(nanos).as("plazo total de la prueba aún disponible").isPositive();
+        assertThat(nanos).as("global workload deadline not exhausted").isPositive();
         return nanos;
     }
 
@@ -227,7 +222,7 @@ class ConcurrencyTest {
                   + coalesce((select sum(o.amount) from operations o
                               where o.status = 'SUCCESS' and o.kind = 'TRANSFER'
                                 and o.destination_id = a.id), 0)
-                """)).as("el saldo de cada cuenta coincide con los movimientos aplicados y registrados").isZero();
+                """)).as("every account reconciles against persisted effective movements").isZero();
         assertThat(jdbc.queryForObject("select sum(balance) from accounts", BigDecimal.class))
                 .isEqualByComparingTo(jdbc.queryForObject("""
                         select (select sum(initial_balance) from accounts)
@@ -241,7 +236,7 @@ class ConcurrencyTest {
     }
 
     private List<List<Map<String, Object>>> databaseDigest() {
-        // Comparar todas las filas ordenadas, incluidas fechas, contadores, motivos y datos de reintentos.
+        // Full ordered row snapshots include timestamps, counters, reasons and retry metadata.
         return List.of(jdbc.queryForList("select * from accounts order by id"),
                 jdbc.queryForList("select * from operations order by id"),
                 jdbc.queryForList("select * from operation_attempts order by id"));
