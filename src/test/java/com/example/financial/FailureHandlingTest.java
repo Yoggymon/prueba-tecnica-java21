@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -39,6 +40,7 @@ import static org.mockito.Mockito.*;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = "financial.lock-timeout-ms=100")
 @Testcontainers
+@DisplayName("Fallos y reintentos")
 class FailureHandlingTest {
     @Container @ServiceConnection
     static final PostgreSQLContainer<?> DATABASE = new PostgreSQLContainer<>("postgres:17.7");
@@ -56,7 +58,8 @@ class FailureHandlingTest {
         jdbc.update("update accounts set balance = initial_balance");
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "Código de conflicto: {0}")
+    @DisplayName("Reintenta tras revertir un débito por un conflicto reconocido")
     @ValueSource(strings = {"40P01", "40001", "55P03"})
     void recognizedRollbackAfterRealDebitRetriesThenSucceeds(String state) {
         var calls = failDebits(state, 1);
@@ -71,6 +74,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("Limita los intentos a tres y permite recuperar la operación con la misma clave")
     void threeTotalAttemptsThenLaterSameKeyRecoveryAndConflictDoesNotChangeCounters() {
         var calls = failDebits("40001", 3);
         result(post("/transfers", "exhausted", "10"), 503, "FAILED", "TRANSIENT_CONFLICT");
@@ -86,6 +90,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("Un fallo no temporal no se reintenta y conserva su resultado")
     void nonTransientWithdrawalFailureIsNotRetriedAndReplaysStably() {
         var calls = new AtomicInteger();
         doAnswer(i -> {
@@ -102,6 +107,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("Un fallo registrado tarde no reemplaza una operación exitosa")
     void concurrentDuplicateSuccessCannotBeOverwrittenByDelayedFailureRecorder() throws Exception {
         var calls = failDebits("40001", 1);
         var recorderReady = new CountDownLatch(1);
@@ -133,6 +139,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("El rechazo definitivo se conserva aunque cambie el saldo")
     void definitiveRejectionRemainsRejectedAfterFundsChange() {
         var first = post("/withdrawals", "rejected", "10001");
         result(first, 422, "REJECTED", "INSUFFICIENT_FUNDS");
@@ -142,7 +149,8 @@ class FailureHandlingTest {
         counts(1, 0, 1);
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "Consulta del resultado no disponible: {0}")
+    @DisplayName("La pérdida simulada de confirmación no duplica el débito")
     @ValueSource(booleans = {false, true})
     void simulatedLostCommitAcknowledgementNeverRepeatsTheDebit(boolean resolutionUnavailable) {
         var committed = simulateLostCommitAcknowledgement(resolutionUnavailable);
@@ -159,6 +167,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("Un fallo de conexión deja el resultado pendiente y permite recuperarlo con la misma clave")
     void connectionFailureAfterDebitIsUnknownNotConfirmedFailedAndLaterKeyRecovers() {
         var calls = failDebits("08006", 1);
         error(post("/transfers", "connection", "10"), "OUTCOME_UNKNOWN", 503);
@@ -172,6 +181,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("Si no se puede registrar la operación, no crea registros ni expone SQL")
     void registrationUnavailableDoesNotInventAnOperationOrLeakSql() {
         doThrow(new DataAccessResourceFailureException("private SQL"))
                 .when(repository).registerTransfer(any());
@@ -181,6 +191,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("La espera por un bloqueo real tiene límite y permite reintentar")
     void actualPostgresRowLockTimeoutIsBoundedAndRetryable() throws Exception {
         var timeoutObserved = new CountDownLatch(1);
         var states = new java.util.concurrent.CopyOnWriteArrayList<String>();
@@ -218,6 +229,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("La interrupción detiene los reintentos y conserva la señal de interrupción")
     void interruptionStopsRetryAndRestoresWorkerFlag() {
         var worker = new java.util.concurrent.atomic.AtomicReference<Thread>();
         doAnswer(i -> {
@@ -228,7 +240,7 @@ class FailureHandlingTest {
         }).when(repository).debit(anyLong(), any());
         var flagAfterOrchestration = new AtomicBoolean();
         OperationOrchestrator target = org.springframework.test.util.AopTestUtils.getUltimateTargetObject(orchestrator);
-        // Capture the flag at the controller boundary before the servlet container clears it.
+        // Comprobar la señal de interrupción en el controlador antes de que el servidor la borre.
         doAnswer(i -> {
             var operation = i.callRealMethod();
             flagAfterOrchestration.set(Thread.currentThread().isInterrupted());
@@ -243,6 +255,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("Si no se puede registrar el fallo, informa resultado desconocido sin inventar registros")
     void unavailableFailureAuditReturnsUnknownWithoutInventedFailure() {
         failDebits("40001", 1);
         doThrow(new DataAccessResourceFailureException("private SQL"))
@@ -257,7 +270,8 @@ class FailureHandlingTest {
         counts(1, 0, 1);
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "Ruta: {0}")
+    @DisplayName("Las solicitudes simultáneas con la misma clave generan un solo movimiento")
     @ValueSource(strings = {"/withdrawals", "/transfers"})
     void coordinatedIdenticalKeysProduceOnlyOneMovement(String path) throws Exception {
         int duplicates = 12;
@@ -284,6 +298,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("Un fallo simulado de confirmación recupera el resultado ya registrado")
     void simulatedRegistrationCommitExceptionResolvesExistingTerminalResult() {
         var original = post("/transfers", "registration-commit", "10");
         var once = new AtomicBoolean(true);
@@ -301,6 +316,7 @@ class FailureHandlingTest {
     }
 
     @Test
+    @DisplayName("Comprueba los datos de la solicitud antes de devolver un resultado recuperado")
     void uncertainRegistrationResolutionStillChecksPayloadBeforeReturningTerminalResult() {
         var original = post("/transfers", "registration-payload", "10");
         doThrow(new UncategorizedSQLException("registration connection simulation", "sanitized",
@@ -320,7 +336,7 @@ class FailureHandlingTest {
         doAnswer(i -> {
             i.callRealMethod();
             assertThat(transactionIds.add(jdbc.queryForObject("select txid_current()", Long.class)))
-                    .as("each processing attempt uses a fresh PostgreSQL transaction").isTrue();
+                    .as("cada intento usa una nueva transacción de PostgreSQL").isTrue();
             if (calls.incrementAndGet() <= failures) {
                 throw new UncategorizedSQLException("test-only after-debit simulation", "sanitized",
                         new SQLException("test-only", state));
@@ -330,7 +346,7 @@ class FailureHandlingTest {
         return calls;
     }
 
-    // Simulation at the actual transaction-manager boundary, NOT a real network outage.
+    // Simulación en el gestor de transacciones; no representa una caída real de la red.
     private AtomicBoolean simulateLostCommitAcknowledgement(boolean unavailable) {
         var debited = new AtomicBoolean();
         var committed = new AtomicBoolean();

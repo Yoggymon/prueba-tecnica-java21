@@ -1,5 +1,6 @@
 package com.example.financial;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -13,6 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @Testcontainers
+@DisplayName("Inicio con PostgreSQL")
 class ApplicationTest {
     @Container
     @ServiceConnection
@@ -23,6 +25,7 @@ class ApplicationTest {
     JdbcTemplate jdbc;
 
     @Test
+    @DisplayName("La aplicación se conecta a PostgreSQL real")
     void startsWithRealPostgreSql() {
         assertThat(jdbc.queryForObject("select 1", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select version()", String.class))

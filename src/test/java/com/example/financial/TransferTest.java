@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -31,6 +32,7 @@ import static org.mockito.Mockito.reset;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
+@DisplayName("Transferencias")
 class TransferTest {
     @Container
     @ServiceConnection
@@ -49,6 +51,7 @@ class TransferTest {
     }
 
     @Test
+    @DisplayName("Registra la transferencia una sola vez al repetir la solicitud")
     void transfersAndReplaysOneCompleteMovement() {
         var first = transfer("transfer", 1, 2, "10.00");
         assertResult(first, 200, "SUCCESS", null);
@@ -66,7 +69,8 @@ class TransferTest {
         assertThat(movement.get("created_at")).isNotNull();
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "Caso de rechazo {index}")
+    @DisplayName("Conserva el rechazo por saldo insuficiente, cuenta inexistente o límite de saldo")
     @ValueSource(strings = {"funds", "source", "destination", "overflow"})
     void businessRejectionsArePersistentAndReplayable(String scenario) {
         long source = scenario.equals("source") ? 999 : 1;
@@ -90,6 +94,7 @@ class TransferTest {
     }
 
     @Test
+    @DisplayName("Acepta el saldo de destino en el límite permitido")
     void acceptsDestinationBalanceAtTheExactLimit() {
         jdbc.update("update accounts set balance = 99999999999999999.98 where id = 2");
         assertResult(transfer("limit", 1, 2, "0.01"), 200, "SUCCESS", null);
@@ -97,7 +102,8 @@ class TransferTest {
         assertCounts(1, 0, 1);
     }
 
-    @ParameterizedTest
+    @ParameterizedTest(name = "Solicitud no válida: {0}")
+    @DisplayName("Las solicitudes no válidas no alteran saldos ni registros")
     @ValueSource(strings = {"{}", "null", "{",
             "{\"key\":\"x\",\"sourceId\":1,\"destinationId\":1,\"amount\":1}",
             "{\"key\":\"x\",\"sourceId\":0,\"destinationId\":2,\"amount\":1}",
@@ -119,6 +125,7 @@ class TransferTest {
     }
 
     @Test
+    @DisplayName("Rechaza una clave repetida con otros datos o tipo de operación")
     void mismatchedPayloadsAndKindsConflictAcrossBothEndpoints() {
         assertResult(transfer("global", 1, 2, "5"), 200, "SUCCESS", null);
         assertError(transfer("global", 1, 999, "5"), 409, "IDEMPOTENCY_CONFLICT");
@@ -135,8 +142,9 @@ class TransferTest {
     }
 
     @Test
+    @DisplayName("Un fallo entre débito y crédito revierte los cambios y registra el fallo")
     void failureAfterDebitRollsBackBalancesMovementAndAttempt() {
-        // Execute the real debit, then fail before the credit inside the processing transaction.
+        // Aplicar el débito real y provocar un fallo antes del crédito, en la misma transacción.
         doAnswer(invocation -> {
             invocation.callRealMethod();
             assertThat(jdbc.queryForObject("select balance from accounts where id = 1", BigDecimal.class))
@@ -154,6 +162,7 @@ class TransferTest {
     }
 
     @Test
+    @DisplayName("Las transferencias simultáneas en ambos sentidos finalizan y conservan los saldos")
     void coordinatedBidirectionalTransfersConserveBalancesWithoutDeadlocks() throws Exception {
         jdbc.update("update accounts set balance = 10000.00 where id = 2");
         int requests = 24;

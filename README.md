@@ -10,7 +10,7 @@ negativos, movimientos duplicados ni cambios parciales. **77 pruebas aprobadas.*
 - Internet para la primera descarga de dependencias e imágenes.
 
 No hace falta instalar Maven ni PostgreSQL: se incluyen Maven Wrapper y la configuración de Docker.
-En IntelliJ, abrí `pom.xml` y seleccioná JDK 21.
+En IntelliJ, abrir `pom.xml` y seleccionar JDK 21.
 
 ## Ejecutar
 
@@ -25,7 +25,7 @@ La API queda en `http://localhost:8080`. PostgreSQL se publica en `localhost:543
 `financial`. Las credenciales locales están en `compose.yaml`; la conexión puede cambiarse
 con `DB_URL`, `DB_USERNAME` y `DB_PASSWORD`.
 
-Flyway aplica las migraciones pendientes al arrancar. En una base nueva crea la cuenta 1
+Flyway prepara y actualiza la estructura de la base al iniciar. En una base nueva crea la cuenta 1
 con S/ 10,000.00 y la cuenta 2 con S/ 0.00. Los datos existentes no se reinician.
 
 ## Probar las operaciones
@@ -47,9 +47,9 @@ El éxito devuelve HTTP 200 y `{"id":"<UUID>","status":"SUCCESS","reason":null}`
 
 - Repetir una clave con los mismos datos no vuelve a mover dinero.
 - Usar la misma clave con otros datos devuelve HTTP 409.
-- Un importe inválido devuelve HTTP 400; un rechazo de negocio, HTTP 422.
+- Un importe inválido devuelve HTTP 400; una operación rechazada, por ejemplo por saldo insuficiente, HTTP 422.
 - Un fallo técnico puede devolver HTTP 503. Eso no demuestra que el movimiento haya fallado:
-  **conservá la misma clave para resolver o reintentar la operación**.
+  **conservar la misma clave para consultar el resultado o reintentar la operación**.
 
 Los importes deben ser positivos y representar céntimos exactos, sin redondeo.
 Las cuentas de una transferencia deben ser distintas.
@@ -68,13 +68,13 @@ Solo los escenarios concurrentes:
 
 Las pruebas usan PostgreSQL temporal mediante Testcontainers: **no modifican la base de Compose**.
 Docker debe estar funcionando. Los reportes quedan en `target/surefire-reports/`.
-Para Docker Desktop en Linux, consultá la [configuración de pruebas](docs/test-results.md#docker-desktop-en-linux).
+Para Docker Desktop en Linux, consultar la [configuración de pruebas](docs/test-results.md#docker-desktop-en-linux).
 
 ## Organización y documentos
 
 - `controller`: recibe solicitudes HTTP y devuelve respuestas.
-- `service`: ejecuta las operaciones y coordina las transacciones.
-- `repository`: contiene las consultas SQL.
+- `service`: ejecuta las operaciones y asegura que se apliquen completas o no se apliquen.
+- `repository`: contiene las consultas a la base de datos (SQL).
 - `model`: define los datos y sus validaciones.
 
 [Nota técnica](docs/technical-note.md) · [Diagrama y conciliación SQL](docs/transaction-flows.md) ·
@@ -82,5 +82,5 @@ Para Docker Desktop en Linux, consultá la [configuración de pruebas](docs/test
 
 ## Detener el entorno
 
-Detené la aplicación con Ctrl+C y luego ejecutá `docker compose stop`. Los datos se conservan.
-La API y sus credenciales son para uso local: **no la expongas públicamente**.
+Detener la aplicación con Ctrl+C y luego ejecutar `docker compose stop`. Los datos se conservan.
+La API y sus credenciales son para uso local: **no exponerla públicamente**.
