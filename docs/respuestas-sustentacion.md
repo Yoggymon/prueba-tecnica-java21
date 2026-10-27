@@ -1,6 +1,7 @@
 
 ## P1. ¿Qué condición de carrera ocurriría si dos transacciones leen el mismo saldo y luego lo actualizan?
 
+Puede ocurrir un problema conocido como **actualización perdida (Lost Update)**.
 
 Por ejemplo, si una cuenta tiene S/ 100 y se realizan dos retiros de S/ 10 al mismo tiempo, ambas operaciones podrían leer el saldo inicial y actualizarlo a S/ 90.
 
